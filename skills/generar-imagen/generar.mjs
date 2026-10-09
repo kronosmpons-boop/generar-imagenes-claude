@@ -27,6 +27,24 @@ function salir(mensaje) {
   process.exit(1);
 }
 
+// Fallo pasajero del servidor (409/5xx): se reintenta una vez.
+class Pasajero extends Error {}
+const esPasajero = (status) => status === 409 || status >= 500;
+
+async function conReintento(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (!(e instanceof Pasajero)) throw e;
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      return await fn();
+    } catch (e2) {
+      salir(e2.message);
+    }
+  }
+}
+
 async function conCloudflare(prompt, pasos) {
   const cuenta = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -43,7 +61,9 @@ async function conCloudflare(prompt, pasos) {
       salir(`Cloudflare rechaza las claves (${res.status}). Vuelve a ejecutar "Guardar claves Cloudflare.cmd". ${detalle}`);
     }
     if (res.status === 429) salir("Has gastado la cuota gratis de hoy en Cloudflare. Vuelve a probar mañana.");
-    salir(`Cloudflare respondió ${res.status}. ${detalle || JSON.stringify(datos).slice(0, 300)}`);
+    const msg = `Cloudflare respondió ${res.status}. ${detalle || JSON.stringify(datos).slice(0, 300)}`;
+    if (esPasajero(res.status)) throw new Pasajero(msg);
+    salir(msg);
   }
   return Buffer.from(datos.result.image, "base64");
 }
@@ -56,7 +76,11 @@ async function conOmniRoute(prompt) {
   });
   const datos = await res.json().catch(() => ({}));
   const b64 = datos?.data?.[0]?.b64_json;
-  if (!res.ok || !b64) salir(`OmniRoute respondió ${res.status}: ${JSON.stringify(datos).slice(0, 300)}`);
+  if (!res.ok || !b64) {
+    const msg = `OmniRoute respondió ${res.status}: ${JSON.stringify(datos).slice(0, 300)}`;
+    if (esPasajero(res.status)) throw new Pasajero(msg);
+    salir(msg);
+  }
   return Buffer.from(b64, "base64");
 }
 
@@ -69,6 +93,8 @@ async function omniRouteDisponible() {
   }
 }
 
+process.on("uncaughtException", (e) => salir(`No he podido conectar (${e.cause?.code || e.message}). ¿Hay internet?`));
+
 const args = leerArgs(process.argv.slice(2));
 const prompt = (args.prompt || "").trim();
 if (!prompt || prompt === "true") salir('Falta el texto. Ejemplo: node generar.mjs --prompt "a glass water bottle"');
@@ -78,9 +104,9 @@ const salida = resolve(args.salida && args.salida !== "true" ? args.salida : `im
 
 let imagen;
 if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) {
-  imagen = await conCloudflare(prompt, pasos);
+  imagen = await conReintento(() => conCloudflare(prompt, pasos));
 } else if (await omniRouteDisponible()) {
-  imagen = await conOmniRoute(prompt);
+  imagen = await conReintento(() => conOmniRoute(prompt));
 } else {
   salir(
     "No encuentro las claves de Cloudflare (CLOUDFLARE_ACCOUNT_ID y CLOUDFLARE_API_TOKEN). " +
