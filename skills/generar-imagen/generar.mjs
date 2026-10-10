@@ -71,7 +71,10 @@ async function conCloudflare(prompt, pasos) {
 async function conOmniRoute(prompt) {
   const res = await fetch(OMNIROUTE, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(process.env.OMNIROUTE_API_KEY && { Authorization: `Bearer ${process.env.OMNIROUTE_API_KEY}` }),
+    },
     body: JSON.stringify({ model: `cloudflare-ai/${MODELO}`, prompt, n: 1 }),
   });
   const datos = await res.json().catch(() => ({}));
